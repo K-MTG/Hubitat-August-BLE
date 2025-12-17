@@ -1,0 +1,61 @@
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment directories
+venv/
+ENV/
+env/
+.venv/
+
+# Mac-specific files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows-specific files (if cross-platform)
+Thumbs.db
+Desktop.ini
+
+# PyCharm and other IDEs
+.idea/
+.vscode/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Editor directories and files
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Python packaging files
+*.egg
+*.egg-info/
+dist/
+build/
+*.manifest
+*.spec
+
+# Other
+*.log
+*.pot
+*.pyc
+*.pyo
+dev/
+
+# Coverage reports and testing artifacts
+.coverage
+nosetests.xml
+coverage.xml
+*.cover
+*.tox
+*.nox
+*.hypothesis/
+.pytest_cache/
+
+# Secret
+**/auth.txt
+**/config.yaml
