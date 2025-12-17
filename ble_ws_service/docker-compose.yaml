@@ -1,0 +1,20 @@
+services:
+  ws-server:
+    build: .
+    container_name: ble-ws-service
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - /var/run/dbus:/var/run/dbus
+    network_mode: host
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"  # Limit each log file to 10MB
+        max-file: "3"    # Keep only 3 log files before rotating

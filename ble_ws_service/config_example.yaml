@@ -1,0 +1,12 @@
+service:
+  websocket:
+    host: 0.0.0.0
+    port: 8765
+    auth_token: "ws-shared-secret"   # optional, omit or null to disable auth
+
+  locks:
+    - lock_name: Front Door
+      serial: L9988AA
+      address: "AA:BB:CC:DD:EE:FF"
+      key: "abcdefabcdefabcdefabcdefabcdefab"
+      slot: 1

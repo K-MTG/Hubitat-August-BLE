@@ -1,0 +1,4 @@
+bleak
+yalexs-ble
+websockets
+PyYAML
