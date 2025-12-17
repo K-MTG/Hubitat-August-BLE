@@ -1,7 +1,7 @@
 services:
-  ws-server:
+  august-ble-ws-service:
     build: .
-    container_name: ble-ws-service
+    container_name: august-ble-ws-service
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro

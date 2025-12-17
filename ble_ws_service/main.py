@@ -15,7 +15,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-_LOGGER = logging.getLogger("ble_ws_service")
+_LOGGER = logging.getLogger("august_ble_ws_service")
 
 
 async def main() -> None:
