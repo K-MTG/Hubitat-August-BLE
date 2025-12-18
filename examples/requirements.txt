@@ -1,2 +1,2 @@
-websockets
-yalexs
+websockets==15.0.1
+yalexs==9.2.0
