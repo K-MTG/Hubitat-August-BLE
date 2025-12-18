@@ -43,6 +43,13 @@ metadata {
     }
 }
 
+/* ================= Tunables ================= */
+
+// Runs once per minute via scheduler, but heartbeat logic uses timestamps
+private static final long CONNECT_STUCK_MS   = 90_000L
+private static final long HEARTBEAT_EVERY_MS = 55_000L   // ~once per minute tick
+private static final long HEARTBEAT_TIMEOUT_MS = 75_000L // if no response, treat as dead
+
 /* ================= Lifecycle ================= */
 
 def installed() {
@@ -68,8 +75,8 @@ def initialize() {
 
 private void setupSchedules() {
     // Only unschedule what we own
-    unschedule("connectionWatchdog")
-    runEvery1Minute("connectionWatchdog")
+    unschedule("healthTick")
+    runEvery1Minute("healthTick")
 }
 
 /**
@@ -82,6 +89,11 @@ private void ensureState(boolean resetUi = false) {
     if (state.connecting == null) state.connecting = false
     if (state.socketOpen == null) state.socketOpen = false
     if (state.connectingSince == null) state.connectingSince = 0L
+
+    // Heartbeat tracking
+    if (state.hbReqId == null) state.hbReqId = null
+    if (state.hbSentAt == null) state.hbSentAt = 0L
+    if (state.lastRxAt == null) state.lastRxAt = 0L
 
     if (resetUi) {
         sendEvent(name: "is_connected", value: false)
@@ -96,31 +108,56 @@ private void ensureState(boolean resetUi = false) {
     }
 }
 
-/* ================= Watchdog ================= */
+/* ================= Health Loop (Watchdog + Heartbeat) ================= */
 
-def connectionWatchdog() {
+def healthTick() {
     ensureState(false)
 
     if (state.manualDisconnect) {
-        logDebug "Watchdog: manualDisconnect=true; skipping"
+        logDebug "Health: manualDisconnect=true; skipping"
         return
     }
 
-    // If we got stuck "connecting" for too long, reset it so we can retry.
+    long nowMs = now()
+
+    // 1) If stuck "connecting" too long, reset so we can retry.
     if (state.connecting && state.connectingSince) {
-        long ageMs = now() - (state.connectingSince as Long)
-        if (ageMs > 90_000L) {
-            logWarn "Watchdog: connecting stuck for ${(ageMs/1000) as int}s; resetting"
-            state.connecting = false
-            state.socketOpen = false
+        long age = nowMs - (state.connectingSince as Long)
+        if (age > CONNECT_STUCK_MS) {
+            logWarn "Health: connecting stuck for ${(age/1000) as int}s; resetting"
+            forceSocketReset("connecting_stuck")
         }
+        return
     }
 
-    if (!state.socketOpen && !state.connecting) {
-        logWarn "Watchdog: not connected; attempting Connect()"
+    // 2) If socket is open, maintain app-level heartbeat
+    if (state.socketOpen) {
+        // Heartbeat in-flight?
+        if (state.hbReqId) {
+            long hbAge = nowMs - ((state.hbSentAt ?: 0L) as Long)
+            if (hbAge > HEARTBEAT_TIMEOUT_MS) {
+                logWarn "Health: heartbeat timed out after ${(hbAge/1000) as int}s; resetting"
+                forceSocketReset("heartbeat_timeout")
+            } else {
+                logDebug "Health: heartbeat pending age=${(hbAge/1000) as int}s"
+            }
+            return
+        }
+
+        // No heartbeat pending: send one if it's time
+        long sinceRx = nowMs - ((state.lastRxAt ?: 0L) as Long)
+        if (sinceRx >= HEARTBEAT_EVERY_MS) {
+            sendHeartbeat()
+        } else {
+            logDebug "Health: ok (lastRx ${(sinceRx/1000) as int}s ago)"
+        }
+        return
+    }
+
+    // 3) Not connected, not connecting -> connect
+    if (!state.connecting) {
+        logWarn "Health: not connected; attempting Connect()"
         Connect()
-    } else {
-        logDebug "Watchdog: open=${state.socketOpen} connecting=${state.connecting}"
     }
 }
 
@@ -160,6 +197,10 @@ def Connect() {
     } catch (e) {
         state.connecting = false
         state.socketOpen = false
+        state.pending = [:]
+        state.hbReqId = null
+        state.hbSentAt = 0L
+
         sendEvent(name: "is_connected", value: false)
         sendEvent(name: "connection_status", value: "connect_exception")
         logWarn "connect() threw: ${e}"
@@ -172,18 +213,11 @@ def Disconnect() {
     logInfo "Disconnecting (manual)"
     state.manualDisconnect = true
 
-    state.connecting = false
-    state.socketOpen = false
-    state.pending = [:]
+    // Immediately reflect intent + clear tracking
+    forceSocketReset("manual_disconnect")
 
     sendEvent(name: "is_connected", value: false)
     sendEvent(name: "connection_status", value: "disconnected")
-
-    try {
-        interfaces.webSocket.close()
-    } catch (e) {
-        logDebug "WS close ignored: ${e}"
-    }
 }
 
 def webSocketStatus(String status) {
@@ -194,9 +228,15 @@ def webSocketStatus(String status) {
         state.connecting = false
         state.socketOpen = true
 
+        // Reset heartbeat bookkeeping on new socket
+        state.hbReqId = null
+        state.hbSentAt = 0L
+        state.lastRxAt = now()
+
         sendEvent(name: "is_connected", value: true)
         sendEvent(name: "connection_status", value: "connected")
 
+        // Safe to discover now
         listLocks()
         return
     }
@@ -205,18 +245,20 @@ def webSocketStatus(String status) {
     state.connecting = false
     state.socketOpen = false
 
-    // IMPORTANT: drop pending requests when socket isn't open anymore
+    // IMPORTANT: drop pending + heartbeat whenever socket isn't open anymore
     state.pending = [:]
+    state.hbReqId = null
+    state.hbSentAt = 0L
 
     sendEvent(name: "is_connected", value: false)
     sendEvent(name: "connection_status", value: status ?: "disconnected")
-
 }
 
 /* ================= Parsing ================= */
 
 def parse(String msg) {
     ensureState(false)
+    state.lastRxAt = now()  // any app-level message counts as “alive”
     logDebug "WS recv: ${msg}"
 
     def json
@@ -247,12 +289,30 @@ private void handleResponse(resp) {
         def err = resp?.error ?: "unknown_error"
         logWarn "WS error: request_id=${resp.request_id} error=${err}"
         state.pending?.remove(resp.request_id)
+
+        // If the heartbeat errored, clear it so next tick can retry
+        if (resp?.request_id && resp.request_id == state.hbReqId) {
+            state.hbReqId = null
+            state.hbSentAt = 0L
+        }
         return
     }
 
     def meta = state.pending?.remove(resp.request_id)
     if (!meta) {
         logDebug "Ignoring response for unknown request_id=${resp.request_id}"
+        // Still clear heartbeat if it matches
+        if (resp?.request_id && resp.request_id == state.hbReqId) {
+            state.hbReqId = null
+            state.hbSentAt = 0L
+        }
+        return
+    }
+
+    if (meta.kind == "heartbeat") {
+        // Heartbeat ack
+        state.hbReqId = null
+        state.hbSentAt = 0L
         return
     }
 
@@ -281,6 +341,7 @@ private void listLocks() {
 private void refreshAll() {
     getChildDevices().each { cd ->
         def ln = cd.getDataValue("lock_name")
+        def ln = cd.getDataValue("lock_name")
         if (ln) sendCmd("get_state", ln, "get_state", [lockName: ln])
     }
 }
@@ -289,6 +350,12 @@ def childLock(String lockName)   { sendCmd("lock",   lockName, "lock") }
 def childUnlock(String lockName) { sendCmd("unlock", lockName, "unlock") }
 def childGetState(String lockName) {
     sendCmd("get_state", lockName, "get_state", [lockName: lockName])
+}
+
+private void sendHeartbeat() {
+    // Heartbeat is app-level: requires backend support for "heartbeat"
+    if (state.hbReqId) return
+    sendCmd("heartbeat", null, "heartbeat")
 }
 
 private void sendCmd(String command, String lockName, String kind, Map meta = [:]) {
@@ -302,6 +369,12 @@ private void sendCmd(String command, String lockName, String kind, Map meta = [:
     def reqId = UUID.randomUUID().toString()
     state.pending[reqId] = ([kind: kind] + meta)
 
+    // Track heartbeat request in-flight
+    if (kind == "heartbeat") {
+        state.hbReqId = reqId
+        state.hbSentAt = now()
+    }
+
     def payload = [
         type: "command",
         request_id: reqId,
@@ -312,6 +385,29 @@ private void sendCmd(String command, String lockName, String kind, Map meta = [:
     def json = JsonOutput.toJson(payload)
     logDebug "WS send: ${json}"
     interfaces.webSocket.sendMessage(json)
+}
+
+/* ================= Helpers ================= */
+
+private void forceSocketReset(String reason) {
+    // Clear bookkeeping first (prevents pending growth)
+    state.connecting = false
+    state.connectingSince = 0L
+    state.socketOpen = false
+    state.pending = [:]
+    state.hbReqId = null
+    state.hbSentAt = 0L
+
+    // Best-effort close
+    try {
+        interfaces.webSocket.close()
+    } catch (e) {
+        logDebug "WS close ignored (${reason}): ${e}"
+    }
+
+    // UI hint (don’t spam “disconnected” over and over)
+    sendEvent(name: "is_connected", value: false)
+    sendEvent(name: "connection_status", value: reason)
 }
 
 /* ================= Child Devices ================= */

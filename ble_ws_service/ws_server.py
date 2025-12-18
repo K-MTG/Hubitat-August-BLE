@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Dict, Set, Optional
 
 from http import HTTPStatus
@@ -194,6 +195,14 @@ class WebSocketServer:
         lock_name = msg.get("lock_name")
 
         try:
+            if command == "heartbeat":
+                await self._send_ok(
+                    websocket,
+                    request_id=request_id,
+                    data={"server_time": time.time()},
+                )
+                return
+
             if command == "list_locks":
                 lock_names = self._lock_manager.get_lock_names()
                 await self._send_ok(
