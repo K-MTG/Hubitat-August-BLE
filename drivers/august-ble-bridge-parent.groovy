@@ -27,7 +27,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 
 metadata {
-    definition(name: "August BLE Bridge (Parent)", namespace: "k-mtg", author: "K-MTG") {
+    definition(name: "August BLE Bridge (Parent)", namespace: "k-mtg", author: "K-MTG", importUrl: "https://raw.githubusercontent.com/K-MTG/Hubitat-August-BLE/refs/heads/main/drivers/august-ble-bridge-parent.groovy") {
         capability "Initialize"
         capability "Refresh"
 

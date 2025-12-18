@@ -18,7 +18,7 @@
  */
 
 metadata {
-    definition(name: "August BLE Lock (Child)", namespace: "k-mtg", author: "K-MTG") {
+    definition(name: "August BLE Lock (Child)", namespace: "k-mtg", author: "K-MTG", importUrl: "https://raw.githubusercontent.com/K-MTG/Hubitat-August-BLE/refs/heads/main/drivers/august-ble-lock-child.groovy") {
         capability "Lock"
         capability "Refresh"
         capability "ContactSensor"
