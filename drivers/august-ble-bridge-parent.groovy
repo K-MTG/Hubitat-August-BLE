@@ -17,6 +17,7 @@
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import groovy.transform.Field
 
 metadata {
     definition(
@@ -46,9 +47,9 @@ metadata {
 /* ================= Tunables ================= */
 
 // Runs once per minute via scheduler, but heartbeat logic uses timestamps
-private static final long CONNECT_STUCK_MS   = 90_000L
-private static final long HEARTBEAT_EVERY_MS = 55_000L   // ~once per minute tick
-private static final long HEARTBEAT_TIMEOUT_MS = 75_000L // if no response, treat as dead
+@Field final Long CONNECT_STUCK_MS        = 90_000L
+@Field final Long HEARTBEAT_EVERY_MS      = 55_000L
+@Field final Long HEARTBEAT_TIMEOUT_MS    = 75_000L
 
 /* ================= Lifecycle ================= */
 
@@ -340,9 +341,10 @@ private void listLocks() {
 
 private void refreshAll() {
     getChildDevices().each { cd ->
-        def ln = cd.getDataValue("lock_name")
-        def ln = cd.getDataValue("lock_name")
-        if (ln) sendCmd("get_state", ln, "get_state", [lockName: ln])
+        def ln = cd.getDataValue("lock_name") ?: cd.label
+        if (ln) {
+            sendCmd("get_state", ln, "get_state", [lockName: ln])
+        }
     }
 }
 
