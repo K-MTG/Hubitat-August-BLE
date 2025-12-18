@@ -48,36 +48,40 @@ metadata {
 def installed() {
     logInfo "Installed"
     ensureState(true)
-    unschedule()
-    runEvery1Minute("connectionWatchdog")
+    setupSchedules()
     runIn(2, "Connect")
 }
 
 def updated() {
     logInfo "Updated"
     ensureState(false)
-    unschedule()
-    runEvery1Minute("connectionWatchdog")
-    // Do not force-connect here; watchdog + user Initialize/Connect controls that.
+    setupSchedules()
+    // Do NOT force-connect here.
 }
 
 def initialize() {
     logInfo "initialize()"
     ensureState(false)
+    setupSchedules()
     Connect()
+}
+
+private void setupSchedules() {
+    // Only unschedule what we own
+    unschedule("connectionWatchdog")
+    runEvery1Minute("connectionWatchdog")
 }
 
 /**
  * Ensures required state keys exist.
- * If resetUi is true, also resets UI attributes to sane defaults.
- *
- * This MUST be safe to call from async callbacks (webSocketStatus/parse/watchdog).
+ * If resetUi is true, resets UI attributes.
  */
-private ensureState(boolean resetUi = false) {
+private void ensureState(boolean resetUi = false) {
     if (state.pending == null) state.pending = [:]
     if (state.manualDisconnect == null) state.manualDisconnect = false
     if (state.connecting == null) state.connecting = false
     if (state.socketOpen == null) state.socketOpen = false
+    if (state.connectingSince == null) state.connectingSince = 0L
 
     if (resetUi) {
         sendEvent(name: "is_connected", value: false)
@@ -97,14 +101,27 @@ private ensureState(boolean resetUi = false) {
 def connectionWatchdog() {
     ensureState(false)
 
-    logDebug "Watchdog: open=${state.socketOpen} connecting=${state.connecting} manual=${state.manualDisconnect}"
+    if (state.manualDisconnect) {
+        logDebug "Watchdog: manualDisconnect=true; skipping"
+        return
+    }
 
-    if (state.manualDisconnect) return
-    if (state.socketOpen) return
-    if (state.connecting) return
+    // If we got stuck "connecting" for too long, reset it so we can retry.
+    if (state.connecting && state.connectingSince) {
+        long ageMs = now() - (state.connectingSince as Long)
+        if (ageMs > 90_000L) {
+            logWarn "Watchdog: connecting stuck for ${(ageMs/1000) as int}s; resetting"
+            state.connecting = false
+            state.socketOpen = false
+        }
+    }
 
-    logWarn "Watchdog: not connected; attempting Connect()"
-    Connect()
+    if (!state.socketOpen && !state.connecting) {
+        logWarn "Watchdog: not connected; attempting Connect()"
+        Connect()
+    } else {
+        logDebug "Watchdog: open=${state.socketOpen} connecting=${state.connecting}"
+    }
 }
 
 /* ================= WebSocket ================= */
@@ -121,13 +138,13 @@ def Connect() {
         logInfo "Connect() ignored; already open"
         return
     }
-
     if (state.connecting) {
         logInfo "Connect() ignored; already connecting"
         return
     }
 
     state.connecting = true
+    state.connectingSince = now()
     sendEvent(name: "connection_status", value: "connecting")
 
     String uri = "ws://${wsHost}:${wsPort}"
@@ -155,7 +172,6 @@ def Disconnect() {
     logInfo "Disconnecting (manual)"
     state.manualDisconnect = true
 
-    // Stop treating as connected immediately (UI should reflect intent)
     state.connecting = false
     state.socketOpen = false
     state.pending = [:]
@@ -174,7 +190,6 @@ def webSocketStatus(String status) {
     ensureState(false)
     logDebug "WS status: ${status}"
 
-    // Hubitat reports strings like: "status: open", "status: closing", "failure: ..."
     if (status?.contains("open")) {
         state.connecting = false
         state.socketOpen = true
@@ -182,17 +197,20 @@ def webSocketStatus(String status) {
         sendEvent(name: "is_connected", value: true)
         sendEvent(name: "connection_status", value: "connected")
 
-        // Kick off discovery once connected
         listLocks()
         return
     }
 
-    // Anything else means not open
+    // Any non-open state => treat as disconnected
     state.connecting = false
     state.socketOpen = false
 
+    // IMPORTANT: drop pending requests when socket isn't open anymore
+    state.pending = [:]
+
     sendEvent(name: "is_connected", value: false)
     sendEvent(name: "connection_status", value: status ?: "disconnected")
+
 }
 
 /* ================= Parsing ================= */
@@ -210,7 +228,7 @@ def parse(String msg) {
     }
 
     if (json?.type == "event" && json?.event == "lock_state") {
-        ensureChild(json.lock_name)?.applySnapshot(json.state)
+        ensureChild(json.lock_name)?.applySnapshot(json.state as Map)
         return
     }
 
@@ -222,18 +240,18 @@ def parse(String msg) {
 
 /* ================= Responses ================= */
 
-private handleResponse(resp) {
+private void handleResponse(resp) {
     ensureState(false)
 
     if (resp?.status == "error") {
-        logWarn "WS error: request_id=${resp.request_id} error=${resp.error}"
+        def err = resp?.error ?: "unknown_error"
+        logWarn "WS error: request_id=${resp.request_id} error=${err}"
         state.pending?.remove(resp.request_id)
         return
     }
 
     def meta = state.pending?.remove(resp.request_id)
     if (!meta) {
-        // Could be late/duplicate response after a reboot or after manual disconnect
         logDebug "Ignoring response for unknown request_id=${resp.request_id}"
         return
     }
@@ -245,7 +263,7 @@ private handleResponse(resp) {
     }
 
     if (meta.kind == "get_state") {
-        getChildByLockName(meta.lockName)?.applySnapshot(resp.data)
+        getChildByLockName(meta.lockName)?.applySnapshot(resp.data as Map)
         return
     }
 }
@@ -256,11 +274,11 @@ def refresh() {
     refreshAll()
 }
 
-private listLocks() {
+private void listLocks() {
     sendCmd("list_locks", null, "list_locks")
 }
 
-private refreshAll() {
+private void refreshAll() {
     getChildDevices().each { cd ->
         def ln = cd.getDataValue("lock_name")
         if (ln) sendCmd("get_state", ln, "get_state", [lockName: ln])
@@ -273,10 +291,9 @@ def childGetState(String lockName) {
     sendCmd("get_state", lockName, "get_state", [lockName: lockName])
 }
 
-private sendCmd(String command, String lockName, String kind, Map meta = [:]) {
+private void sendCmd(String command, String lockName, String kind, Map meta = [:]) {
     ensureState(false)
 
-    // Gate on the state flags (not on attributes which can lag)
     if (!state.socketOpen) {
         logWarn "WS not open; dropping ${command}"
         return
