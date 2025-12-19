@@ -216,7 +216,7 @@ class WebSocketServer:
                 raise ValueError("lock_name is required")
 
             if command == "lock":
-                await self._lock_manager.get_lock(lock_name).lock()
+                await self._lock_manager.cmd_lock(lock_name)
                 await self._send_ok(
                     websocket,
                     request_id=request_id,
@@ -225,7 +225,7 @@ class WebSocketServer:
                 return
 
             if command == "unlock":
-                await self._lock_manager.get_lock(lock_name).unlock()
+                await self._lock_manager.cmd_unlock(lock_name)
                 await self._send_ok(
                     websocket,
                     request_id=request_id,

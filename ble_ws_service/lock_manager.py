@@ -49,6 +49,10 @@ class LockManager:
         # Why we are debouncing (door vs lock)
         self._pending_reason: Dict[str, str] = {}
 
+        # Global BLE op semaphore:
+        # Ensures we never run overlapping BLE operations across multiple locks.
+        self._ble_op_sem = asyncio.Semaphore(1)
+
     # ------------------------------------------------------------------
     # Event listener registration
     # ------------------------------------------------------------------
@@ -75,10 +79,10 @@ class LockManager:
         # NOTE: BleLock.register_state_listener is expected to call this as:
         #   listener(new_state, lock_info, conn_info)
         async def _on_state(
-                lock_name: str,
-                new_state: LockState,
-                lock_info: LockInfo,
-                conn_info: ConnectionInfo,
+            lock_name: str,
+            new_state: LockState,
+            lock_info: LockInfo,
+            conn_info: ConnectionInfo,
         ) -> None:
             lock_status = new_state.lock
             door_status = new_state.door
@@ -93,7 +97,7 @@ class LockManager:
             # compare against pending state first
             prev_lock, prev_door = self._pending_state.get(
                 lock_name,
-                self._critical_state.get(lock_name, (None, None))
+                self._critical_state.get(lock_name, (None, None)),
             )
 
             lock_changed = stable_lock is not None and stable_lock != prev_lock
@@ -123,6 +127,33 @@ class LockManager:
             self._schedule_state_settle(lock)
 
         lock.register_state_listener(_on_state)
+
+    # ------------------------------------------------------------------
+    # BLE command serialization helpers
+    # ------------------------------------------------------------------
+    async def _with_ble_lock(self, lock_name: str, op_name: str, coro_factory):
+        """
+        Run a BLE operation under the global semaphore.
+        coro_factory must be a 0-arg callable returning an awaitable.
+        """
+        async with self._ble_op_sem:
+            _LOGGER.debug("[%s] BLE op start: %s", lock_name, op_name)
+            try:
+                return await coro_factory()
+            finally:
+                _LOGGER.debug("[%s] BLE op end: %s", lock_name, op_name)
+
+    async def cmd_lock(self, lock_name: str) -> None:
+        lock = self.get_lock(lock_name)
+        await self._with_ble_lock(lock_name, "lock", lock.lock)
+
+    async def cmd_unlock(self, lock_name: str) -> None:
+        lock = self.get_lock(lock_name)
+        await self._with_ble_lock(lock_name, "unlock", lock.unlock)
+
+    async def cmd_refresh(self, lock_name: str) -> None:
+        lock = self.get_lock(lock_name)
+        await self._with_ble_lock(lock_name, "refresh", lock.refresh)
 
     # ------------------------------------------------------------------
     # Unified debounce + refresh pipeline
@@ -172,10 +203,10 @@ class LockManager:
 
                 await self._broadcast(event)
 
-                # 2) Reconcile with refresh
+                # 2) Reconcile with refresh (serialized across all locks)
                 await asyncio.sleep(self.REFRESH_AFTER_SECONDS)
                 _LOGGER.info("[%s] Refreshing lock after settle", lock_name)
-                await lock.refresh()
+                await self.cmd_refresh(lock_name)
 
             except asyncio.CancelledError:
                 _LOGGER.debug("[%s] Settle cancelled due to new activity", lock_name)
@@ -248,7 +279,6 @@ class LockManager:
     # ------------------------------------------------------------------
     # Event broadcast
     # ------------------------------------------------------------------
-
     async def _broadcast(self, event: dict) -> None:
         """
         Fan out an event to all registered listeners.
@@ -264,4 +294,3 @@ class LockManager:
             await listener(event)
         except Exception:
             _LOGGER.exception("Error in event listener")
-
