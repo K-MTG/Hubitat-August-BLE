@@ -207,3 +207,18 @@ Each layer has a single responsibility:
 - Displays metadata (manufacturer/model/serial) and RSSI
 
 ---
+
+## Credits & References
+
+This project builds on excellent work from the Yale-Libs and Home Assistant communities:
+
+### Upstream Libraries
+- **yalexs-ble (Yale BLE / offline key support)**  
+  https://github.com/Yale-Libs/yalexs-ble/tree/main
+
+- **yalexs (August / Yale cloud API + utilities)**  
+  https://github.com/Yale-Libs/yalexs
+
+### Home Assistant Reference
+This project’s BLE/offline-key flow and “push updates” behavior is heavily informed by the Home Assistant integration: 
+https://github.com/home-assistant/core/tree/dev/homeassistant/components/yalexs_ble
