@@ -56,6 +56,7 @@ constantly polling the lock.
  - August / Yale Bluetooth Smart Lock
  - BLE-capable compute device
       - tested with Raspberry Pi CM5 in an enclosure with an external bluetooth antenna
+      - recommend an external USB Bluetooth adapter - Feasycom FSC-BP119
  - Hubitat Hub
 
 ### Software
