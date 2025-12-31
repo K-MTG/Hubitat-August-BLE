@@ -162,11 +162,14 @@ class LockManager:
         lock_name = lock.lock_name
 
         # Cancel any existing settle task
-        task: Optional[asyncio.Task] = self._pending_tasks.pop(lock_name, None)
-        if task and not task.done():
-            task.cancel()
+        old_task: Optional[asyncio.Task] = self._pending_tasks.get(lock_name)
+        if old_task and not old_task.done():
+            old_task.cancel()
+
+        settle_task: Optional[asyncio.Task] = None  # will be assigned after create_task
 
         async def _settle():
+            nonlocal settle_task
             try:
                 reason = self._pending_reason.get(lock_name)
                 delay = (
@@ -213,10 +216,13 @@ class LockManager:
             except Exception:
                 _LOGGER.exception("[%s] Error during settle/refresh", lock_name)
             finally:
-                self._pending_tasks.pop(lock_name, None)
-                self._pending_reason.pop(lock_name, None)
+                # IMPORTANT: only the currently-tracked task is allowed to clean up
+                if self._pending_tasks.get(lock_name) is settle_task:
+                    self._pending_tasks.pop(lock_name, None)
+                    self._pending_reason.pop(lock_name, None)
 
-        self._pending_tasks[lock_name] = asyncio.create_task(_settle())
+        settle_task = asyncio.create_task(_settle())
+        self._pending_tasks[lock_name] = settle_task
 
     # ------------------------------------------------------------------
     # Accessors
@@ -249,13 +255,32 @@ class LockManager:
     async def stop(self) -> None:
         """
         Stop BLE scanning and all locks.
+        Cancels any pending settle/refresh tasks so shutdown doesn't trigger BLE work later.
         """
         _LOGGER.info("Stopping LockManager")
 
-        # Stop locks first so they stop scheduling work
+        # 1) Cancel + drain any pending settle tasks (prevents refresh-after-settle during shutdown)
+        if self._pending_tasks:
+            _LOGGER.info("Cancelling %d pending settle task(s)", len(self._pending_tasks))
+            tasks = list(self._pending_tasks.values())
+
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+
+            # Drain them so they don't run later / produce "Task was destroyed but pending"
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            self._pending_tasks.clear()
+            self._pending_reason.clear()
+            # Optional: clear candidate state too (depends on your preference)
+            # self._pending_state.clear()
+
+        # 2) Stop locks so they stop producing callbacks/work
         for lock in self._locks.values():
             await lock.stop()
 
+        # 3) Stop scanner last
         if self._scanner:
             _LOGGER.info("Stopping BLE scanner")
             await self._scanner.stop()
