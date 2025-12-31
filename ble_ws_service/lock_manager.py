@@ -162,11 +162,14 @@ class LockManager:
         lock_name = lock.lock_name
 
         # Cancel any existing settle task
-        task: Optional[asyncio.Task] = self._pending_tasks.pop(lock_name, None)
-        if task and not task.done():
-            task.cancel()
+        old_task: Optional[asyncio.Task] = self._pending_tasks.get(lock_name)
+        if old_task and not old_task.done():
+            old_task.cancel()
+
+        settle_task: Optional[asyncio.Task] = None  # will be assigned after create_task
 
         async def _settle():
+            nonlocal settle_task
             try:
                 reason = self._pending_reason.get(lock_name)
                 delay = (
@@ -213,10 +216,13 @@ class LockManager:
             except Exception:
                 _LOGGER.exception("[%s] Error during settle/refresh", lock_name)
             finally:
-                self._pending_tasks.pop(lock_name, None)
-                self._pending_reason.pop(lock_name, None)
+                # IMPORTANT: only the currently-tracked task is allowed to clean up
+                if self._pending_tasks.get(lock_name) is settle_task:
+                    self._pending_tasks.pop(lock_name, None)
+                    self._pending_reason.pop(lock_name, None)
 
-        self._pending_tasks[lock_name] = asyncio.create_task(_settle())
+        settle_task = asyncio.create_task(_settle())
+        self._pending_tasks[lock_name] = settle_task
 
     # ------------------------------------------------------------------
     # Accessors
