@@ -1,4 +1,4 @@
-bleak==2.0.0
-yalexs-ble==3.2.2
+bleak==2.1.1
+yalexs-ble==3.2.6
 websockets==15.0.1
 PyYAML==6.0.3
