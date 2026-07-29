@@ -67,5 +67,5 @@ def load_config(path: str | Path) -> ServiceConfig:
     return ServiceConfig(
         websocket=websocket,
         locks=locks,
-        refresh_after_seconds=float(service.get("refresh_after_seconds", 8.0)),
+        refresh_after_seconds=float(service.get("refresh_after_seconds", ServiceConfig.refresh_after_seconds)),
     )
