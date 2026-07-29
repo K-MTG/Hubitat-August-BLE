@@ -30,9 +30,10 @@ class LockManager:
 
     LOCK_DEBOUNCE_SECONDS = 2.0
     DOOR_DEBOUNCE_SECONDS = 0.5
-    REFRESH_AFTER_SECONDS = 8.0
 
-    def __init__(self) -> None:
+    def __init__(self, refresh_after_seconds) -> None:
+        self.refresh_after_seconds = refresh_after_seconds
+
         self._locks: Dict[str, BleLock] = {}
         self._scanner: Optional[BleakScanner] = None
         self._event_listeners: List[EventListener] = []
@@ -207,7 +208,7 @@ class LockManager:
                 await self._broadcast(event)
 
                 # 2) Reconcile with refresh (serialized across all locks)
-                await asyncio.sleep(self.REFRESH_AFTER_SECONDS)
+                await asyncio.sleep(self.refresh_after_seconds)
                 _LOGGER.info("[%s] Refreshing lock after settle", lock_name)
                 await self.cmd_refresh(lock_name)
 

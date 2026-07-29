@@ -21,7 +21,7 @@ _LOGGER = logging.getLogger("august_ble_ws_service")
 async def main() -> None:
     cfg = load_config("config.yaml")
 
-    lock_manager = LockManager()
+    lock_manager = LockManager(refresh_after_seconds=cfg.refresh_after_seconds)
 
     # Create BleLock instances from config
     for lc in cfg.locks:
