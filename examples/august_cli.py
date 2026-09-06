@@ -49,7 +49,7 @@
 # OPTIONS
 # -------
 # --brand        Brand to use:
-#                AUGUST | YALE_ACCESS | YALE_HOME | YALE_GLOBAL | YALE_AUGUST
+#                AUGUST | YALE_ACCESS | YALE_GLOBAL | YALE_AUGUST
 #
 # --email        Account email address
 # --password     Account password (unsafe to pass via CLI; will prompt if omitted)
@@ -86,7 +86,6 @@ from yalexs.const import Brand
 BRAND_MAP = {
     "AUGUST": Brand.AUGUST,
     "YALE_ACCESS": Brand.YALE_ACCESS,
-    "YALE_HOME": Brand.YALE_HOME,
     "YALE_GLOBAL": Brand.YALE_GLOBAL,
     "YALE_AUGUST": Brand.YALE_AUGUST,
 }
@@ -100,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--brand",
         choices=BRAND_MAP.keys(),
-        help="Brand (AUGUST, YALE_ACCESS, YALE_HOME, YALE_GLOBAL, YALE_AUGUST)",
+        help="Brand (AUGUST, YALE_ACCESS, YALE_GLOBAL, YALE_AUGUST)",
     )
     parser.add_argument("--email", help="Account email")
     parser.add_argument(
@@ -197,7 +196,7 @@ async def main():
     args = parse_args()
 
     brand_name = args.brand or input(
-        "Enter brand (AUGUST / YALE_ACCESS / YALE_HOME / YALE_GLOBAL / YALE_AUGUST): "
+        "Enter brand (AUGUST / YALE_ACCESS / YALE_GLOBAL / YALE_AUGUST): "
     ).strip().upper()
 
     brand = BRAND_MAP.get(brand_name)
