@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from bleak import BleakScanner
@@ -31,6 +32,12 @@ class LockManager:
     LOCK_DEBOUNCE_SECONDS = 2.0
     DOOR_DEBOUNCE_SECONDS = 0.5
 
+    # Locks advertise every ~1-2s, so this long with no advertisement at all means
+    # the scanner is dead (e.g. bluetoothd was restarted by an unattended upgrade).
+    SCANNER_STALE_SECONDS = 120.0
+    SCANNER_WATCHDOG_INTERVAL = 30.0
+    SCANNER_RESTART_TIMEOUT = 30.0
+
     def __init__(self, refresh_after_seconds) -> None:
         self.refresh_after_seconds = refresh_after_seconds
 
@@ -53,6 +60,11 @@ class LockManager:
         # Global BLE op semaphore:
         # Ensures we never run overlapping BLE operations across multiple locks.
         self._ble_op_sem = asyncio.Semaphore(1)
+
+        # Scanner watchdog state
+        self._last_advertisement = time.monotonic()
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._scanner_failed = asyncio.Event()
 
     # ------------------------------------------------------------------
     # Event listener registration
@@ -244,14 +256,75 @@ class LockManager:
         if self._scanner:
             return
 
+        await self._start_scanner()
+        self._last_advertisement = time.monotonic()
+
+        # Start all locks
+        for lock in self._locks.values():
+            await lock.start()
+
+        self._watchdog_task = asyncio.create_task(self._scanner_watchdog())
+
+    async def wait_scanner_failed(self) -> None:
+        """
+        Resolves if the scanner could not be recovered; the caller should exit so
+        the container restarts with a fresh BlueZ connection.
+        """
+        await self._scanner_failed.wait()
+
+    async def _start_scanner(self) -> None:
         _LOGGER.info("Starting BleakScanner")
         self._scanner = BleakScanner(detection_callback=self._on_advertisement)
         await self._scanner.start()
         _LOGGER.info("BLE scanner started")
 
-        # Start all locks
-        for lock in self._locks.values():
-            await lock.start()
+    async def _restart_scanner(self) -> None:
+        if self._scanner:
+            try:
+                await self._scanner.stop()
+            except Exception as ex:
+                # Expected after a bluetoothd restart: the old discovery session is gone
+                _LOGGER.warning("Error stopping stale BLE scanner: %s", ex)
+            self._scanner = None
+        await self._start_scanner()
+
+    async def _scanner_watchdog(self) -> None:
+        """
+        Restart the scanner if advertisements stop arriving. If they still don't
+        arrive after a restart, signal failure so the process exits.
+        """
+        restarted_at: Optional[float] = None
+        while True:
+            await asyncio.sleep(self.SCANNER_WATCHDOG_INTERVAL)
+            now = time.monotonic()
+
+            if restarted_at is not None and self._last_advertisement > restarted_at:
+                _LOGGER.info("BLE advertisements resumed after scanner restart")
+                restarted_at = None
+
+            silent_for = now - self._last_advertisement
+            if silent_for < self.SCANNER_STALE_SECONDS:
+                continue
+
+            if restarted_at is not None:
+                if now - restarted_at < self.SCANNER_STALE_SECONDS:
+                    continue
+                _LOGGER.error(
+                    "No BLE advertisements for %.0fs even after restarting the scanner; giving up",
+                    silent_for,
+                )
+                self._scanner_failed.set()
+                return
+
+            _LOGGER.warning("No BLE advertisements for %.0fs; restarting scanner", silent_for)
+            try:
+                # Bounded so a wedged BlueZ can't hang the watchdog itself
+                await asyncio.wait_for(self._restart_scanner(), self.SCANNER_RESTART_TIMEOUT)
+                restarted_at = time.monotonic()
+            except Exception:
+                _LOGGER.exception("Failed to restart BLE scanner; giving up")
+                self._scanner_failed.set()
+                return
 
     async def stop(self) -> None:
         """
@@ -259,6 +332,11 @@ class LockManager:
         Cancels any pending settle/refresh tasks so shutdown doesn't trigger BLE work later.
         """
         _LOGGER.info("Stopping LockManager")
+
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            await asyncio.gather(self._watchdog_task, return_exceptions=True)
+            self._watchdog_task = None
 
         # 1) Cancel + drain any pending settle tasks (prevents refresh-after-settle during shutdown)
         if self._pending_tasks:
@@ -284,7 +362,10 @@ class LockManager:
         # 3) Stop scanner last
         if self._scanner:
             _LOGGER.info("Stopping BLE scanner")
-            await self._scanner.stop()
+            try:
+                await self._scanner.stop()
+            except Exception as ex:
+                _LOGGER.warning("Error stopping BLE scanner: %s", ex)
             self._scanner = None
 
     # ------------------------------------------------------------------
@@ -299,6 +380,7 @@ class LockManager:
         Called by BleakScanner when any BLE advertisement is seen.
         We feed them to all locks; yalexs_ble internally filters by name/address.
         """
+        self._last_advertisement = time.monotonic()
         for lock in self._locks.values():
             lock.push_lock.update_advertisement(device, adv)
 

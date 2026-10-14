@@ -158,6 +158,7 @@ The service:
 * 🚪 Emits **lock / door events** without polling. 
 * 🌐 Exposes a **WebSocket API** with optional authentication
 * 🔐 Supports multiple locks
+* 🩺 Restarts the BLE scanner if advertisements stop (e.g. after `bluetoothd` restarts), exiting for Docker to restart it if that fails
 * 🐳 Docker + docker-compose ready
 
 
