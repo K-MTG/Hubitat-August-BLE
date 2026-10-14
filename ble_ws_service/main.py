@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 
 from version import __version__
 from config import load_config
@@ -18,7 +19,7 @@ logging.basicConfig(
 _LOGGER = logging.getLogger("august_ble_ws_service")
 
 
-async def main() -> None:
+async def main() -> int:
     cfg = load_config("config.yaml")
 
     lock_manager = LockManager(refresh_after_seconds=cfg.refresh_after_seconds)
@@ -62,13 +63,22 @@ async def main() -> None:
             # Signal handling may not be available on some platforms (e.g. Windows)
             pass
 
-    await stop_event.wait()
+    # Run until a shutdown signal, or until the BLE scanner can't be recovered
+    stop_task = asyncio.create_task(stop_event.wait())
+    scanner_task = asyncio.create_task(lock_manager.wait_scanner_failed())
+    await asyncio.wait({stop_task, scanner_task}, return_when=asyncio.FIRST_COMPLETED)
+    scanner_failed = scanner_task.done()
+    stop_task.cancel()
+    scanner_task.cancel()
 
     # graceful shutdown
     await ws_server.stop()
     await lock_manager.stop()
 
+    # Non-zero exit lets Docker's restart policy bring us back with a fresh BlueZ connection
+    return 1 if scanner_failed else 0
+
 
 if __name__ == "__main__":
     _LOGGER.info("Starting BLE WS Service version %s", __version__)
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
