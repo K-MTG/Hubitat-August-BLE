@@ -68,14 +68,15 @@ Driver behaviour to keep in mind:
 - On macOS, bleak uses CoreBluetooth and the lock "address" is a UUID, not a MAC.
 - Deployment targets are Linux BLE hosts: Pi CM5 / Pi 4 (aarch64) and an x86_64 VM, on Ubuntu 24.04–26.04 with BlueZ 5.72–5.85. The image is `python:3.13-slim` and has no compiler, so when bumping dependencies confirm prebuilt wheels exist for **both** aarch64 and x86_64 on Python 3.13.
 - Deploy is `cd <repo>/ble_ws_service && sudo docker compose up -d --build`. The container uses host networking, privileged, with `/var/run/dbus` mounted and `config.yaml` mounted read-only. Deployments are managed **by hand** per checkout (no config-management tool). The container is `august-ble-ws-service` with `restart: unless-stopped`. Docker live-restore is off, so a Docker upgrade/restart also restarts the service.
-- Upgrading a host from ≤ 0.1.8 to the renamed compose project needs a one-time `sudo docker rm -f august-ble-ws-service` before `up -d --build` (see README "Upgrading"). The old image `ble_ws_service-august-ble-ws-service` stays on the host until pruned, which makes rollback fast: check out the old commit and run `docker compose up -d` without `--build`.
+- Upgrading a host from ≤ 0.1.8 to the renamed compose project needs a one-time `sudo docker stop -t 30 august-ble-ws-service && sudo docker rm august-ble-ws-service` before `up -d --build` (see README "Upgrading"). The old image `ble_ws_service-august-ble-ws-service` stays on the host until pruned, which makes rollback fast: check out the old commit and run `docker compose up -d` without `--build`.
+- **Stop gracefully; avoid `docker rm -f` / `docker kill`.** A SIGKILL skips the SIGTERM shutdown and can leave BlueZ holding the lock's GATT link, and a connected lock stops advertising. `stop_grace_period: 30s` covers a normal shutdown (WS close handshakes can take up to 10s each). Use `docker stop -t 30` / `docker restart -t 30`. Recovery: at startup `BleLock.start()` calls `close_stale_connections_by_address()` for every configured lock, so a restart clears a leftover link. A link left while the service is still running is not cleared until the next restart.
 - Branches: `fix/…`, `chore/…`, `feat/…`. PR into `main`.
 
 ## Sibling project: hubitat-snooze-ble
 
 `hubitat-snooze-ble` (separate repo, SNOOZ white-noise machines via `pysnooz`) was copied from this service and has the same layout: `ble_ws_service/`, `ws_server.py`, Docker compose with host networking. A bug in shared code is probably in both (e.g. the `_process_request` tuple bug was fixed in both). Some hosts run **both** services, so:
 - **Port:** both default to `8765` with `network_mode: host`. Where they share a host, August uses `8765` and Snooz `8766`. Keep it that way.
-- **Compose project name:** since 0.1.9 this compose file sets `name: hubitat-august-ble`. Before that, both projects were named `ble_ws_service` after the directory, so `--remove-orphans` in one checkout removed the **other** service's container. Snooz keeping `ble_ws_service` is fine now that ours is distinct. Don't remove the `name:`.
+- **Compose project name:** since 0.1.9 this compose file sets `name: hubitat-august-ble`. Before that, both projects were named `ble_ws_service` after the directory, so `--remove-orphans` in one checkout removed the **other** service's container. Snooz now sets its own `name: snooz-ble-ws-service`. Both projects are explicitly named; don't remove either `name:`.
 - **Bluetooth adapter:** each service serializes only its own BLE ops. Scans and connects from the two containers can overlap on one adapter and cause intermittent connect failures.
 
 ## Operating on deployed hosts
@@ -96,3 +97,4 @@ Driver behaviour to keep in mind:
 3. Treat `SECUREMODE` as locked (Yale Linus / EU locks only).
 4. Opt-in "who unlocked it" via the activity log → `lastCodeName`.
 5. Re-tune or drop `refresh_after_seconds` after hardware testing.
+6. Make `BleLock.stop()` wait for the disconnect. yalexs-ble's shutdown callback disconnects in a background task that `asyncio.run()` may cancel at exit, so even a graceful stop can leave the link up. The startup stale-close recovers it, and it matters mostly for `always_connected` locks. Needs BlueZ hardware to test.

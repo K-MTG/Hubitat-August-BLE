@@ -145,8 +145,12 @@ longer collides with other services cloned into a `ble_ws_service` directory. Be
 old container once, or compose will fail with "container name already in use":
 
 ```bash
-sudo docker rm -f august-ble-ws-service
+sudo docker stop -t 30 august-ble-ws-service && sudo docker rm august-ble-ws-service
 ```
+
+Stop the container gracefully rather than with `docker rm -f`, which skips the service's shutdown and can leave the lock's
+Bluetooth connection open (a connected lock stops advertising). The service clears such leftover connections when it next
+starts.
 
 ---
 

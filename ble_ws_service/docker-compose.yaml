@@ -7,6 +7,9 @@ services:
     build: .
     container_name: august-ble-ws-service
     restart: unless-stopped
+    # Shutdown closes WebSocket clients (up to 10s each) and then the locks; Docker's
+    # default 10s would SIGKILL mid-shutdown and can leave a BlueZ link connected.
+    stop_grace_period: 30s
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - /var/run/dbus:/var/run/dbus
