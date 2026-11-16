@@ -1,2 +1,2 @@
-websockets==17.1
-yalexs==9.2.13
+websockets==17.4
+yalexs==9.2.14

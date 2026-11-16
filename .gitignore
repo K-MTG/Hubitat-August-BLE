@@ -60,3 +60,4 @@ coverage.xml
 **/auth.txt
 **/config.yaml
 .pi_password
+.pi_hosts

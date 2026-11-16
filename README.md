@@ -130,6 +130,24 @@ cd Hubitat-August-BLE/ble_ws_service
 ```
 4. Create `config.yaml` using `config_example.yaml` as reference. 
 5. Start container `sudo docker compose up -d --build`
+
+### Upgrading
+
+```bash
+cd /opt/Hubitat-August-BLE
+git pull
+cd ble_ws_service
+sudo docker compose up -d --build
+```
+
+**Upgrading from 0.1.8 or earlier:** 0.1.9 gives the compose project its own name (`hubitat-august-ble`), so it no
+longer collides with other services cloned into a `ble_ws_service` directory. Before the first `up` on 0.1.9, remove the
+old container once, or compose will fail with "container name already in use":
+
+```bash
+sudo docker rm -f august-ble-ws-service
+```
+
 ---
 
 ### Setup Hubitat Driver

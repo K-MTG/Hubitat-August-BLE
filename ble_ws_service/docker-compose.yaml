@@ -1,3 +1,7 @@
+# Explicit project name: without it the project is named after the directory
+# ("ble_ws_service"), which collides with other services cloned the same way.
+name: hubitat-august-ble
+
 services:
   august-ble-ws-service:
     build: .

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -8,7 +9,7 @@ from typing import Dict, Set, Optional
 
 from http import HTTPStatus
 from websockets.asyncio.server import serve, ServerConnection, Server
-from websockets.server import Request
+from websockets.http11 import Request, Response
 from websockets.exceptions import ConnectionClosed
 
 from lock_manager import LockManager
@@ -79,31 +80,26 @@ class WebSocketServer:
 
     async def _process_request(
             self,
-            _connection: ServerConnection,
+            connection: ServerConnection,
             request: Request,
-    ):
+    ) -> Optional[Response]:
+        # The asyncio server requires a Response object here (built with
+        # connection.respond); a legacy (status, headers, body) tuple aborts the
+        # handshake without sending any HTTP status to the client.
         if not self._auth_token:
             return None  # auth disabled
 
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             _LOGGER.warning("Missing Authorization header")
-
-            return (
-                HTTPStatus.UNAUTHORIZED,
-                [("WWW-Authenticate", "Bearer")],
-                b"Missing Authorization header\n",
-            )
+            response = connection.respond(HTTPStatus.UNAUTHORIZED, "Missing Authorization header\n")
+            response.headers["WWW-Authenticate"] = "Bearer"
+            return response
 
         token = auth_header.removeprefix("Bearer ").strip()
-        if token != self._auth_token:
+        if not hmac.compare_digest(token.encode(), str(self._auth_token).encode()):
             _LOGGER.warning("Invalid auth token")
-
-            return (
-                HTTPStatus.FORBIDDEN,
-                [],
-                b"Invalid auth token\n",
-            )
+            return connection.respond(HTTPStatus.FORBIDDEN, "Invalid auth token\n")
 
         return None
 
