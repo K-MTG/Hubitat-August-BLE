@@ -68,13 +68,14 @@ Driver behaviour to keep in mind:
 - On macOS, bleak uses CoreBluetooth and the lock "address" is a UUID, not a MAC.
 - Deployment targets are Linux BLE hosts: Pi CM5 / Pi 4 (aarch64) and an x86_64 VM, on Ubuntu 24.04–26.04 with BlueZ 5.72–5.85. The image is `python:3.13-slim` and has no compiler, so when bumping dependencies confirm prebuilt wheels exist for **both** aarch64 and x86_64 on Python 3.13.
 - Deploy is `cd <repo>/ble_ws_service && sudo docker compose up -d --build`. The container uses host networking, privileged, with `/var/run/dbus` mounted and `config.yaml` mounted read-only. Deployments are managed **by hand** per checkout (no config-management tool). The container is `august-ble-ws-service` with `restart: unless-stopped`. Docker live-restore is off, so a Docker upgrade/restart also restarts the service.
+- Upgrading a host from ≤ 0.1.8 to the renamed compose project needs a one-time `sudo docker rm -f august-ble-ws-service` before `up -d --build` (see README "Upgrading"). The old image `ble_ws_service-august-ble-ws-service` stays on the host until pruned, which makes rollback fast: check out the old commit and run `docker compose up -d` without `--build`.
 - Branches: `fix/…`, `chore/…`, `feat/…`. PR into `main`.
 
 ## Sibling project: hubitat-snooze-ble
 
 `hubitat-snooze-ble` (separate repo, SNOOZ white-noise machines via `pysnooz`) was copied from this service and has the same layout: `ble_ws_service/`, `ws_server.py`, Docker compose with host networking. A bug in shared code is probably in both (e.g. the `_process_request` tuple bug was fixed in both). Some hosts run **both** services, so:
 - **Port:** both default to `8765` with `network_mode: host`. Where they share a host, August uses `8765` and Snooz `8766`. Keep it that way.
-- **Compose project name clash:** neither compose file sets `name:`, so both projects are named `ble_ws_service` after the directory. On a shared host, `--remove-orphans` in one checkout removes the **other** service's container. The fix is a unique top-level `name:` in each compose file. Changing it means recreating the running container once on every host, because `container_name` is fixed, so it's the owner's call. **Not done yet.**
+- **Compose project name:** since 0.1.9 this compose file sets `name: hubitat-august-ble`. Before that, both projects were named `ble_ws_service` after the directory, so `--remove-orphans` in one checkout removed the **other** service's container. Snooz keeping `ble_ws_service` is fine now that ours is distinct. Don't remove the `name:`.
 - **Bluetooth adapter:** each service serializes only its own BLE ops. Scans and connects from the two containers can overlap on one adapter and cause intermittent connect failures.
 
 ## Operating on deployed hosts
@@ -95,4 +96,3 @@ Driver behaviour to keep in mind:
 3. Treat `SECUREMODE` as locked (Yale Linus / EU locks only).
 4. Opt-in "who unlocked it" via the activity log → `lastCodeName`.
 5. Re-tune or drop `refresh_after_seconds` after hardware testing.
-6. Give the compose file a unique `name:` (needs a one-time container recreate on each host).
