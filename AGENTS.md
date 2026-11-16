@@ -23,14 +23,14 @@ Two halves ship together and share a JSON protocol:
 
 ## Service internals (`ble_ws_service/`)
 
-- `main.py`: loads `config.yaml`, builds one `BleLock` per lock, starts `LockManager` then `WebSocketServer`. Exits **1** if the BLE scanner can't be recovered, so Docker's `restart: unless-stopped` brings it back with a fresh BlueZ connection.
+- `main.py`: loads `config.yaml`, builds one `BleLock` per lock, starts `LockManager` then `WebSocketServer`. Exits **1** if the BLE scanner can't be recovered, so Docker's `restart: unless-stopped` brings it back with a fresh BlueZ connection. Startup has to survive a missing adapter or D-Bus: after a power cut, Docker may start the container before `bluetoothd` is ready. Today an exception during startup exits non-zero and Docker retries.
 - `ble_lock.py` (`BleLock`): wraps one `yalexs_ble.PushLock`. Turns its **sync** state callback into async listener tasks. `snapshot()` builds the state dict sent to Hubitat.
 - `lock_manager.py` (`LockManager`):
   - Owns the single `BleakScanner` and feeds every advertisement to every `PushLock` (yalexs-ble filters by name/address).
   - Debounces state: lock 2.0s, door 0.5s. It only commits **stable** states (`LOCKED`/`UNLOCKED`, `OPENED`/`CLOSED`). Transitional and other states (LOCKING, JAMMED, SECUREMODE, UNLATCHED…) do **not** emit events.
   - After an event settles, it schedules a `refresh` `refresh_after_seconds` later (default 8s) to reconcile.
   - A global `asyncio.Semaphore(1)` serializes lock/unlock/refresh across all locks.
-  - Scanner watchdog: if there are no advertisements for 120s, restart the scanner; if they're still silent after another 120s, signal failure and the process exits 1. This exists because unattended upgrades restart `bluetoothd`.
+  - Scanner watchdog: if there are no advertisements for 120s, restart the scanner; if they're still silent after another 120s, signal failure and the process exits 1. This exists because `bluetoothd` restarts underneath us. In practice that's mostly BlueZ 5.72 **segfaulting** (seen every 1–3 days on one deployment) with systemd restarting it, not package upgrades. bleak ≥ 3.1.0 also detects a lost D-Bus connection, which matters because `/var/run/dbus` is mounted from the host.
 - `ws_server.py` (`WebSocketServer`): `websockets.asyncio.server`. Optional bearer-token auth in `_process_request`. That function **must return a `Response` from `connection.respond(...)` or `None`**; a tuple breaks the handshake. Messages on one connection are handled **sequentially**, so a slow BLE op blocks later commands on that socket.
 - `config.py`: dataclasses + YAML loader. See `config_example.yaml`. Per-lock `always_connected` (more battery) and service-level `refresh_after_seconds`.
 - `version.py`: service version. Bump it in release commits (`0.1.x - <summary>` style).
@@ -66,15 +66,23 @@ Driver behaviour to keep in mind:
   3. Drive `LockManager` + `WebSocketServer` offline. Patch `PushLock.start`, `wait_for_first_update` and `register_callback` on the `BleLock`, fire synthetic `LockState`s, and connect with `websockets.asyncio.client`.
 - Real BLE testing happens only on the Pi with a lock in range. Say plainly when a change hasn't been hardware-tested.
 - On macOS, bleak uses CoreBluetooth and the lock "address" is a UUID, not a MAC.
-- Deployment target is Linux aarch64 with no compiler in the image. When bumping dependencies, confirm prebuilt wheels exist for aarch64 and Python 3.13.
-- Deploy is `cd <repo>/ble_ws_service && sudo docker compose up -d --build`. The container uses host networking, privileged, with `/var/run/dbus` mounted and `config.yaml` mounted read-only.
+- Deployment targets are Linux BLE hosts: Pi CM5 / Pi 4 (aarch64) and an x86_64 VM, on Ubuntu 24.04–26.04 with BlueZ 5.72–5.85. The image is `python:3.13-slim` and has no compiler, so when bumping dependencies confirm prebuilt wheels exist for **both** aarch64 and x86_64 on Python 3.13.
+- Deploy is `cd <repo>/ble_ws_service && sudo docker compose up -d --build`. The container uses host networking, privileged, with `/var/run/dbus` mounted and `config.yaml` mounted read-only. Deployments are managed **by hand** per checkout (no config-management tool). The container is `august-ble-ws-service` with `restart: unless-stopped`. Docker live-restore is off, so a Docker upgrade/restart also restarts the service.
 - Branches: `fix/…`, `chore/…`, `feat/…`. PR into `main`.
 
 ## Sibling project: hubitat-snooze-ble
 
-`hubitat-snooze-ble` (separate repo, SNOOZ white-noise machines via `pysnooz`) was copied from this service and has the same layout: `ble_ws_service/`, `ws_server.py`, Docker compose with host networking. A bug in shared code is probably in both (e.g. the `_process_request` tuple bug was fixed in both). If both services run on the **same host**:
-- **Port:** both default to `8765` with `network_mode: host`, so one will fail to bind. Give them different `websocket.port` values.
-- **Bluetooth adapter:** each service serializes only its own BLE ops. Scans and connects from the two containers can overlap on one adapter and cause intermittent connect failures. Consider separate adapters.
+`hubitat-snooze-ble` (separate repo, SNOOZ white-noise machines via `pysnooz`) was copied from this service and has the same layout: `ble_ws_service/`, `ws_server.py`, Docker compose with host networking. A bug in shared code is probably in both (e.g. the `_process_request` tuple bug was fixed in both). Some hosts run **both** services, so:
+- **Port:** both default to `8765` with `network_mode: host`. Where they share a host, August uses `8765` and Snooz `8766`. Keep it that way.
+- **Compose project name clash:** neither compose file sets `name:`, so both projects are named `ble_ws_service` after the directory. On a shared host, `--remove-orphans` in one checkout removes the **other** service's container. The fix is a unique top-level `name:` in each compose file. Changing it means recreating the running container once on every host, because `container_name` is fixed, so it's the owner's call. **Not done yet.**
+- **Bluetooth adapter:** each service serializes only its own BLE ops. Scans and connects from the two containers can overlap on one adapter and cause intermittent connect failures.
+
+## Operating on deployed hosts
+
+- Reading (logs, `docker ps`, `journalctl`) is fine. **Any write to a host** (deploy, restart, config edit) needs the owner's go-ahead for that specific change.
+- Never restart Docker or recreate containers as a side effect of something else.
+- Never print secrets. Refer to where they live without opening them.
+- This repo is **public**: keep host names, IPs and personal paths out of commits, PRs and this file.
 
 ## Secrets: never commit or echo these
 
@@ -87,3 +95,4 @@ Driver behaviour to keep in mind:
 3. Treat `SECUREMODE` as locked (Yale Linus / EU locks only).
 4. Opt-in "who unlocked it" via the activity log → `lastCodeName`.
 5. Re-tune or drop `refresh_after_seconds` after hardware testing.
+6. Give the compose file a unique `name:` (needs a one-time container recreate on each host).
